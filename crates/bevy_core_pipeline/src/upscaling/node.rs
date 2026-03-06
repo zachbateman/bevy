@@ -1,13 +1,15 @@
 use crate::{blit::BlitPipeline, upscaling::ViewUpscalingPipeline};
 use bevy_ecs::{prelude::*, query::QueryItem};
 use bevy_render::{
-    camera::{CameraOutputMode, ClearColor, ClearColorConfig, ExtractedCamera},
+    camera::{
+        CameraOutputMode, ClearColor, ClearColorConfig, ExtractedCamera, NormalizedRenderTarget,
+    },
     render_graph::{NodeRunError, RenderGraphContext, ViewNode},
     render_resource::{
         BindGroup, BindGroupEntries, PipelineCache, RenderPassDescriptor, TextureViewId,
     },
     renderer::RenderContext,
-    view::ViewTarget,
+    view::{ExtractedWindows, ViewTarget},
 };
 use std::sync::Mutex;
 
@@ -87,7 +89,25 @@ impl ViewNode for UpscalingNode {
             if let Some(viewport) = &camera.viewport {
                 let size = viewport.physical_size;
                 let position = viewport.physical_position;
-                render_pass.set_scissor_rect(position.x, position.y, size.x, size.y);
+
+                // When the window is minimized, the render target surface can shrink to 1x1
+                // while the camera viewport retains stale dimensions from before minimization.
+                // Validate the scissor rect fits within the actual surface to avoid a wgpu panic.
+                let fits_in_target = match &camera.target {
+                    Some(NormalizedRenderTarget::Window(window_ref)) => {
+                        world.get_resource::<ExtractedWindows>()
+                            .and_then(|windows| windows.windows.get(&window_ref.entity()))
+                            .map_or(true, |w| {
+                                position.x.saturating_add(size.x) <= w.physical_width
+                                    && position.y.saturating_add(size.y) <= w.physical_height
+                            })
+                    }
+                    _ => true,
+                };
+
+                if fits_in_target {
+                    render_pass.set_scissor_rect(position.x, position.y, size.x, size.y);
+                }
             }
         }
 
