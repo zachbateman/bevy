@@ -14,6 +14,24 @@
 #import bevy_core_pipeline::tonemapping::approximate_inverse_tone_mapping
 #endif
 
+// `offset_position` is normalized to this view's *viewport*, but the
+// transmission texture (and the prepass depth texture) cover the *whole*
+// render target: `MainTransmissivePass3dNode` copies the full main texture.
+// A camera that renders to a sub-rectangle of the target (split-screen
+// viewports) must therefore offset + scale by its viewport before it
+// samples, otherwise it sees the entire target squashed into its own
+// rectangle — every other viewport shows up as a ghost copy. For a
+// full-target camera the viewport origin is 0 and its size is the target
+// size, so these are the identity.
+fn viewport_to_target_px(offset_position: vec2<f32>) -> vec2<f32> {
+    return view_bindings::view.viewport.xy + offset_position * view_bindings::view.viewport.zw;
+}
+
+fn viewport_to_target_uv(offset_position: vec2<f32>) -> vec2<f32> {
+    let target_size = vec2<f32>(textureDimensions(view_bindings::view_transmission_texture));
+    return viewport_to_target_px(offset_position) / target_size;
+}
+
 fn specular_transmissive_light(world_position: vec4<f32>, frag_coord: vec3<f32>, view_z: f32, N: vec3<f32>, V: vec3<f32>, F0: vec3<f32>, ior: f32, thickness: f32, perceptual_roughness: f32, specular_transmissive_color: vec3<f32>, transmitted_environment_light_specular: vec3<f32>) -> vec3<f32> {
     // Calculate the ratio between refraction indexes. Assume air/vacuum for the space outside the mesh
     let eta = 1.0 / ior;
@@ -61,14 +79,14 @@ fn fetch_transmissive_background_non_rough(offset_position: vec2<f32>, frag_coor
     var background_color = textureSampleLevel(
         view_bindings::view_transmission_texture,
         view_bindings::view_transmission_sampler,
-        offset_position,
+        viewport_to_target_uv(offset_position),
         0.0
     );
 
 #ifdef DEPTH_PREPASS
 #ifndef WEBGL2
     // Use depth prepass data to reject values that are in front of the current fragment
-    if prepass_utils::prepass_depth(vec4<f32>(offset_position * view_bindings::view.viewport.zw, 0.0, 0.0), 0u) > frag_coord.z {
+    if prepass_utils::prepass_depth(vec4<f32>(viewport_to_target_px(offset_position), 0.0, 0.0), 0u) > frag_coord.z {
         background_color.a = 0.0;
     }
 #endif
@@ -161,14 +179,14 @@ fn fetch_transmissive_background(offset_position: vec2<f32>, frag_coord: vec3<f3
         var sample = textureSampleLevel(
             view_bindings::view_transmission_texture,
             view_bindings::view_transmission_sampler,
-            modified_offset_position,
+            viewport_to_target_uv(modified_offset_position),
             0.0
         );
 
 #ifdef DEPTH_PREPASS
 #ifndef WEBGL2
         // Use depth prepass data to reject values that are in front of the current fragment
-        if prepass_utils::prepass_depth(vec4<f32>(modified_offset_position * view_bindings::view.viewport.zw, 0.0, 0.0), 0u) > frag_coord.z {
+        if prepass_utils::prepass_depth(vec4<f32>(viewport_to_target_px(modified_offset_position), 0.0, 0.0), 0u) > frag_coord.z {
             sample = vec4<f32>(0.0);
         }
 #endif
