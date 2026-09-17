@@ -218,32 +218,11 @@ pub fn prepare_windows(
     mut windows: ResMut<ExtractedWindows>,
     mut window_surfaces: ResMut<WindowSurfaces>,
     render_device: Res<RenderDevice>,
-    #[cfg(target_os = "linux")] render_instance: Res<RenderInstance>,
 ) {
     for window in windows.windows.values_mut() {
         let window_surfaces = window_surfaces.deref_mut();
         let Some(surface_data) = window_surfaces.surfaces.get(&window.entity) else {
             continue;
-        };
-
-        // A recurring issue is hitting `wgpu::SurfaceError::Timeout` on certain Linux
-        // mesa driver implementations. This seems to be a quirk of some drivers.
-        // We'd rather keep panicking when not on Linux mesa, because in those case,
-        // the `Timeout` is still probably the symptom of a degraded unrecoverable
-        // application state.
-        // see https://github.com/bevyengine/bevy/pull/5957
-        // and https://github.com/gfx-rs/wgpu/issues/1218
-        #[cfg(target_os = "linux")]
-        let may_erroneously_timeout = || {
-            render_instance
-                .enumerate_adapters(wgpu::Backends::VULKAN)
-                .iter()
-                .any(|adapter| {
-                    let name = adapter.get_info().name;
-                    name.starts_with("Radeon")
-                        || name.starts_with("AMD")
-                        || name.starts_with("Intel")
-                })
         };
 
         let surface = &surface_data.surface;
@@ -264,12 +243,14 @@ pub fn prepare_windows(
                 };
                 window.set_swapchain_texture(frame);
             }
-            #[cfg(target_os = "linux")]
-            Err(wgpu::SurfaceError::Timeout) if may_erroneously_timeout() => {
-                tracing::trace!(
-                    "Couldn't get swap chain texture. This is probably a quirk \
-                        of your Linux GPU driver, so it can be safely ignored."
-                );
+            // LOCAL PATCH: upstream only tolerates this on Linux mesa and panics
+            // everywhere else. A `Timeout` just means the swap-chain acquire took
+            // longer than wgpu's 1 s limit (a heavy frame, a saturated machine);
+            // wgpu documents it as "try again next frame". Skip the frame instead.
+            // see https://github.com/bevyengine/bevy/pull/5957
+            // and https://github.com/gfx-rs/wgpu/issues/1218
+            Err(wgpu::SurfaceError::Timeout) => {
+                warn!("Couldn't get swap chain texture: timed out waiting for the next frame. Frame skipped.");
             }
             Err(err) => {
                 panic!("Couldn't get swap chain texture, operation unrecoverable: {err}");
